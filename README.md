@@ -4,7 +4,7 @@ A **beautiful, high-performance West Highland Terrier simulator** that runs in a
 
 Built as a **single self-contained HTML file** with [Three.js](https://threejs.org/) (r149, vendored locally). No build step, no network at runtime, no external files — every blade of grass, tree, and sound effect is generated procedurally. The dog himself is the real deal: a **rigged, animated 3D model generated from photos of the actual Ludo**, embedded directly into the HTML (base64) and decoded by a built-in mini glTF parser, so the file still runs from `file://` with zero dependencies.
 
-*Screenshots captured September 5, 2026, from the current simulator. The HUD is hidden in these captures.*
+*Screenshots captured September 5, 2026, from the current simulator.*
 
 ![Ludo carrying the resized tennis ball in face-camera view](screenshot-face.jpg)
 
