@@ -6,15 +6,15 @@ Built as a **single self-contained HTML file** with [Three.js](https://threejs.o
 
 *Screenshots captured September 5, 2026, from the current simulator.*
 
-![Ludo carrying the resized tennis ball in face-camera view](screenshot-face.jpg)
+![Ludo carrying the resized tennis ball in face-camera view](screenshot-face-20260905.jpg)
 
 *Face camera: Ludo carries the smaller tennis ball.*
 
-![First-person view across the grass toward trees and the gazebo](screenshot.jpg)
+![First-person view across the grass toward trees and the gazebo](screenshot-park-20260905.jpg)
 
 *First-person camera: grass, trees, and the gazebo from dog height.*
 
-![Chase camera following Ludo beside the pond](screenshot-chase.jpg)
+![Chase camera following Ludo beside the pond](screenshot-chase-20260905.jpg)
 
 *Chase camera: Ludo beside the pond, stone banks, and reeds. Press `V` to cycle through all four camera modes.*
 
