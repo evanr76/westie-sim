@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>wes.glb inspector</title>
+<script src="../three.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;}
+  canvas{display:block;}
+  #hud{position:fixed;top:8px;left:8px;font:13px monospace;background:#fffc;padding:6px 8px;border-radius:6px;white-space:pre;}
+</style>
+</head>
+<body>
+<div id="hud">loading…</div>
+<script>
+(async () => {
+  const T = THREE;
+  const hud = document.getElementById('hud');
+  try {
+    const buf = await (await fetch('wes.glb')).arrayBuffer();
+    const dv = new DataView(buf);
+    let off = 12, json = null, bin = null;
+    while (off < buf.byteLength) {
+      const len = dv.getUint32(off, true), type = dv.getUint32(off + 4, true);
+      if (type === 0x4E4F534A) json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, off + 8, len)));
+      else bin = { off: off + 8, len };
+      off += 8 + len;
+    }
+    const prim = json.meshes[0].primitives[0];
+    const acc = json.accessors, bv = json.bufferViews;
+    const posA = acc[prim.attributes.POSITION], posV = bv[posA.bufferView];
+    const pos = new Float32Array(buf, bin.off + (posV.byteOffset || 0) + (posA.byteOffset || 0), posA.count * 3);
+    const geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.BufferAttribute(pos, 3));
+    if (prim.indices !== undefined) {
+      const iA = acc[prim.indices], iV = bv[iA.bufferView];
+      const Arr = iA.componentType === 5125 ? Uint32Array : Uint16Array;
+      geo.setIndex(new T.BufferAttribute(new Arr(buf, bin.off + (iV.byteOffset || 0) + (iA.byteOffset || 0), iA.count), 1));
+    }
+    geo.computeVertexNormals();
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox, size = new T.Vector3(), center = new T.Vector3();
+    bb.getSize(size); bb.getCenter(center);
+
+    const scene = new T.Scene();
+    scene.background = new T.Color(0xdfe6ef);
+    const mesh = new T.Mesh(geo, new T.MeshStandardMaterial({ color: 0xf2eee6, roughness: 0.85 }));
+    mesh.position.sub(center);
+    scene.add(mesh);
+    scene.add(new T.HemisphereLight(0xffffff, 0x667788, 0.9));
+    const sun = new T.DirectionalLight(0xfff2e0, 1.1); sun.position.set(2, 3, 2); scene.add(sun);
+
+    const R = Math.max(size.x, size.y, size.z);
+    const camera = new T.PerspectiveCamera(40, innerWidth / innerHeight, R / 100, R * 20);
+    const renderer = new T.WebGLRenderer({ antialias: true });
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.outputEncoding = T.sRGBEncoding;
+    document.body.appendChild(renderer.domElement);
+
+    window.setView = (thetaDeg, phiDeg) => {
+      const th = thetaDeg * Math.PI / 180, ph = (phiDeg ?? 75) * Math.PI / 180, d = R * 1.9;
+      camera.position.set(d * Math.sin(ph) * Math.sin(th), d * Math.cos(ph), d * Math.sin(ph) * Math.cos(th));
+      camera.lookAt(0, 0, 0);
+      renderer.render(scene, camera);
+    };
+    window.fit = () => {
+      const w = Math.max(innerWidth, 320), h = Math.max(innerHeight, 240);
+      camera.aspect = w / h; camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+      renderer.render(scene, camera);
+    };
+    addEventListener('resize', window.fit);
+    window.setView(30, 75);
+    window.fit();
+    hud.textContent = `loaded: ${posA.count.toLocaleString()} verts | size ${size.x.toFixed(2)} x ${size.y.toFixed(2)} x ${size.z.toFixed(2)}`;
+    window.__loaded = true;
+  } catch (e) {
+    hud.textContent = 'ERROR: ' + e.message;
+    console.error(e);
+  }
+})();
+</script>
+</body>
+</html>

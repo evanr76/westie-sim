@@ -1,0 +1,148 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ludo-v1 rig inspector</title>
+<script src="../three.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;}
+  canvas{display:block;}
+  #hud{position:fixed;top:8px;left:8px;font:13px monospace;background:#fffc;padding:6px 8px;border-radius:6px;white-space:pre;}
+</style>
+</head>
+<body>
+<div id="hud">loading…</div>
+<script>
+(async () => {
+  const T = THREE;
+  const hud = document.getElementById('hud');
+  try {
+    const buf = await (await fetch(new URLSearchParams(location.search).get('f') || 'ludo-v1')).arrayBuffer();
+    const dv = new DataView(buf);
+    let off = 12, json = null, bin = null;
+    while (off < buf.byteLength) {
+      const len = dv.getUint32(off, true), type = dv.getUint32(off + 4, true);
+      if (type === 0x4E4F534A) json = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, off + 8, len)));
+      else bin = { off: off + 8, len };
+      off += 8 + len;
+    }
+    const CTYPES = {5120:Int8Array,5121:Uint8Array,5122:Int16Array,5123:Uint16Array,5125:Uint32Array,5126:Float32Array};
+    const NCOMP = {SCALAR:1,VEC2:2,VEC3:3,VEC4:4,MAT4:16};
+    function accArray(i) {
+      const a = json.accessors[i], v = json.bufferViews[a.bufferView];
+      const Arr = CTYPES[a.componentType];
+      return new Arr(buf, bin.off + (v.byteOffset||0) + (a.byteOffset||0), a.count * NCOMP[a.type]);
+    }
+
+    // ---- nodes -> objects (Bone for joints, Object3D otherwise), unique names ----
+    const jointSet = new Set((json.skins?.[0]?.joints) || []);
+    const objs = json.nodes.map((n, i) => {
+      const o = jointSet.has(i) ? new T.Bone() : new T.Object3D();
+      o.name = (n.name || ('node' + i)) + '#' + i;           // unique
+      if (n.translation) o.position.fromArray(n.translation);
+      if (n.rotation) o.quaternion.fromArray(n.rotation);
+      if (n.scale) o.scale.fromArray(n.scale);
+      return o;
+    });
+    json.nodes.forEach((n, i) => (n.children || []).forEach(c => objs[i].add(objs[c])));
+    const scene = new T.Scene();
+    scene.background = new T.Color(0xdfe6ef);
+    json.scenes[0].nodes.forEach(i => scene.add(objs[i]));
+
+    // ---- geometry ----
+    const prim = json.meshes[0].primitives[0];
+    const geo = new T.BufferGeometry();
+    geo.setAttribute('position', new T.BufferAttribute(accArray(prim.attributes.POSITION), 3));
+    if (prim.attributes.NORMAL !== undefined) geo.setAttribute('normal', new T.BufferAttribute(accArray(prim.attributes.NORMAL), 3));
+    if (prim.attributes.TEXCOORD_0 !== undefined) geo.setAttribute('uv', new T.BufferAttribute(accArray(prim.attributes.TEXCOORD_0), 2));
+    if (prim.attributes.JOINTS_0 !== undefined) geo.setAttribute('skinIndex', new T.BufferAttribute(accArray(prim.attributes.JOINTS_0), 4));
+    if (prim.attributes.WEIGHTS_0 !== undefined) geo.setAttribute('skinWeight', new T.BufferAttribute(accArray(prim.attributes.WEIGHTS_0), 4));
+    if (prim.indices !== undefined) geo.setIndex(new T.BufferAttribute(accArray(prim.indices), 1));
+
+    // ---- texture ----
+    let map = null;
+    if (json.images?.length) {
+      const iv = json.bufferViews[json.images[0].bufferView];
+      const blob = new Blob([new Uint8Array(buf, bin.off + (iv.byteOffset||0), iv.byteLength)], { type: json.images[0].mimeType });
+      const bmp = await createImageBitmap(blob);
+      map = new T.Texture(bmp);
+      map.flipY = false;                 // glTF convention
+      map.encoding = T.sRGBEncoding;
+      map.needsUpdate = true;
+    }
+    const mat = new T.MeshStandardMaterial({ map, color: 0xffffff, roughness: 0.9, skinning: true });
+
+    // ---- skinned mesh ----
+    const skin = json.skins[0];
+    const mesh = new T.SkinnedMesh(geo, mat);
+    mesh.frustumCulled = false;
+    // glTF spec: the skinned mesh node's own transform is IGNORED — joints alone place
+    // the surface. Parent at scene root and bind with identity, never under the armature.
+    scene.add(mesh);
+    const bones = skin.joints.map(j => objs[j]);
+    const ibm = accArray(skin.inverseBindMatrices);
+    const inverses = bones.map((_, k) => new T.Matrix4().fromArray(ibm, k * 16));
+    scene.updateMatrixWorld(true);
+    mesh.bind(new T.Skeleton(bones, inverses), new T.Matrix4());
+
+    // ---- animation clip ----
+    const anim = json.animations[0];
+    const tracks = [];
+    for (const ch of anim.channels) {
+      const s = anim.samplers[ch.sampler];
+      const times = accArray(s.input), vals = accArray(s.output);
+      const tgt = objs[ch.target.node].name;
+      const path = ch.target.path;
+      if (path === 'translation') tracks.push(new T.VectorKeyframeTrack(tgt + '.position', times, vals));
+      else if (path === 'rotation') tracks.push(new T.QuaternionKeyframeTrack(tgt + '.quaternion', times, vals));
+      else if (path === 'scale') tracks.push(new T.VectorKeyframeTrack(tgt + '.scale', times, vals));
+    }
+    const clip = new T.AnimationClip('take', -1, tracks);
+    const mixer = new T.AnimationMixer(scene);
+    const action = mixer.clipAction(clip);
+    action.play();
+
+    // ---- lights / camera / renderer ----
+    scene.add(new T.HemisphereLight(0xffffff, 0x667788, 0.9));
+    const sun = new T.DirectionalLight(0xfff2e0, 1.0); sun.position.set(2, 3, 2); scene.add(sun);
+    mixer.setTime(0); scene.updateMatrixWorld(true);
+    const bb = new T.Box3(), _v = new T.Vector3();
+    for (const b of bones) { b.getWorldPosition(_v); bb.expandByPoint(_v); }
+    const size = bb.getSize(new T.Vector3()), center = bb.getCenter(new T.Vector3());
+    const R = Math.max(size.x, size.y, size.z) * 0.9;
+    const camera = new T.PerspectiveCamera(40, 1, R / 100, R * 20);
+    const renderer = new T.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+    renderer.outputEncoding = T.sRGBEncoding;
+    document.body.appendChild(renderer.domElement);
+
+    let theta = 95, phi = 80;
+    window.setView = (t, p) => { theta = t; phi = p ?? phi; window.draw(); };
+    window.draw = () => {
+      const w = 1280, h = 720;   // pane-reported innerWidth flaps to 0; render fixed-size
+      camera.aspect = w / h; camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+      const th = theta * Math.PI/180, ph = phi * Math.PI/180, d = (window.__R || R) * 2.0;
+      camera.position.set(center.x + d*Math.sin(ph)*Math.sin(th), center.y + d*Math.cos(ph), center.z + d*Math.sin(ph)*Math.cos(th));
+      camera.lookAt(center);
+      renderer.render(scene, camera);
+    };
+    window.showTime = (t) => { mixer.setTime(t); scene.updateMatrixWorld(true); window.draw(); };
+    window.__scene = scene; window.__mesh = mesh; window.__camera = camera; window.__mixer = mixer; window.__center = center; window.__R = R;
+    window.reframe = () => {
+      const b = new T.Box3().setFromObject(mesh);
+      b.getSize(size); b.getCenter(center);
+      const r = Math.max(size.x, size.y, size.z);
+      window.__R = r; camera.near = r / 100; camera.far = r * 20;
+      return { size: size.toArray().map(v => +v.toFixed(3)), center: center.toArray().map(v => +v.toFixed(3)) };
+    };
+    window.showTime(0);
+    hud.textContent = `clip "${anim.name}" dur=${clip.duration.toFixed(2)}s | ${bones.length} bones | ${tracks.length} tracks`;
+    window.__loaded = true;
+  } catch (e) {
+    hud.textContent = 'ERROR: ' + e.message;
+    console.error(e);
+  }
+})();
+</script>
+</body>
+</html>

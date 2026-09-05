@@ -1,0 +1,18 @@
+# Local OS and editor files
+.DS_Store
+.claude/
+.codex/
+.agents/
+
+# Original reference photos (not used by the game)
+ludo-photos/
+
+# Rolling model-import backups and temporary files
+*.bak
+*.log
+*.tmp
+
+# Local credentials
+.env
+.env.*
+!.env.example

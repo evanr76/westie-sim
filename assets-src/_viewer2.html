@@ -1,0 +1,30 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>ludo-v1 inspector</title>
+<script type="module" src="https://unpkg.com/@google/model-viewer@3.5.0/dist/model-viewer.min.js"></script>
+<style>
+  html,body{margin:0;width:100%;height:100%;}
+  model-viewer{width:100vw;height:100vh;background:#dfe6ef;}
+  #hud{position:fixed;top:8px;left:8px;font:13px monospace;background:#fffc;padding:6px 8px;border-radius:6px;z-index:2;}
+</style>
+</head>
+<body>
+<model-viewer id="mv" src="ludo-v1" camera-controls autoplay interaction-prompt="none" exposure="1"></model-viewer>
+<div id="hud">loading…</div>
+<script>
+const mv = document.getElementById('mv');
+mv.addEventListener('load', () => {
+  const anims = mv.availableAnimations || [];
+  document.getElementById('hud').textContent = 'anims: ' + (anims.length ? anims.join(' | ') : 'none');
+  if (anims.length) { mv.animationName = anims[0]; mv.play(); }
+  window.__loaded = true;
+});
+mv.addEventListener('error', e => {
+  document.getElementById('hud').textContent = 'ERROR: ' + (e.detail?.type || e.type);
+});
+window.setOrbit = (theta, phi) => { mv.cameraOrbit = `${theta}deg ${phi}deg 105%`; mv.jumpCameraToGoal(); };
+</script>
+</body>
+</html>
