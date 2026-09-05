@@ -53,10 +53,48 @@ A single-file, browser-based, first-person **West Highland Terrier park simulato
 - **Perf**: tightened the shadow frustum (SH 20, far 100 — sharper + cheaper; NOTE: did *not* gate shadow-map regen on player movement, which would freeze the shadows of dynamic casters — ball/squirrels/gait); hoisted movement scratch vectors; guarded `camera.updateProjectionMatrix()` behind an actual FOV change; squirrel/bird animation reads the sim `time` instead of `performance.now()`.
 
 ## Known minor / outstanding (nice-to-have, from the design spec)
-- Pond is functional but uses a cheap animated material — could add reeds, lily pads, ducks, and a footbridge.
+- Pond includes reeds, cattails, lily pads, stones, procedural sky reflections, and pooled paw ripples. Ducks and a footbridge remain possible additions.
 - No hand-rolled post-processing (bloom / god-rays) yet; relies on tone-mapping + CSS vignettes. The grass uses a single instanced field, not the spec's "rolling pool" that follows the dog infinitely (fine for the current bounded park).
-- Stretch features not built: ball-catch-at-apex + owner head-pat, fireflies/dusk day-night cycle, wet pawprints / wet-dog shake, comfort sub-sliders (only a single reduce-motion toggle exists).
-- Pigeon/squirrel models are simple low-poly; could be prettier.
+- Stretch features not built: ball-catch-at-apex + owner head-pat, fireflies/dusk day-night cycle, comfort sub-sliders (only a single reduce-motion toggle exists).
+- Pigeons and squirrels have procedural anatomy and animated pivots; wildlife obstacle avoidance and further silhouette polish remain useful.
 
 ## When changing visuals
 Verify in a browser preview and screenshot. Colors/sizes are tuned by eye — don't trust the code alone. Watch for: objects enveloping/clipping the near camera, grass clipping the lens, texture seams (must be tileable), and shadow-frustum artifacts.
+
+
+## Repository and current implementation notes (September 2026)
+
+- GitHub: `evanr76/westie-sim` (private), default branch `main`. The local directory is still `westie-park-sim`.
+- Canonical runtime is `index.html` plus `three.min.js`. `westie-park-standalone.html` is a legacy snapshot; do not edit it as the current app.
+- Git tracks model sources in `assets-src/`, the embedded payload, tools, and screenshots. `.gitignore` excludes reference photos, editor settings, credentials, and rolling backups.
+- Read `TODO.md` for the feature backlog. README screenshots predate the latest scenery changes.
+- Grass uses up to 96,000 placements (32,000 mobile), narrower curved blades, clumped placement, and a tileable turf texture. `pathHalfWidth`, `pathSegmentExists`, and `onGravel` share path geometry rules. Never reintroduce probabilistic grass placement on gravel; keep bending clearance.
+- Trees combine solid interior crown lobes and leaf cutouts. Placement excludes the pond and gazebo. Sparse leaf-only canopies regressed visually; check silhouettes up close and at distance.
+- Furniture uses `detailMesh`/`detailBar` and shared materials. Fixed meshes are baked within groups by `bakePropDetails`; preserve animation pivot groups and referenced handles.
+- Gazebo collision uses individual posts/rails with an entrance. `walkSurfaceHeight()` handles its floor/steps for Ludo and the ball; changing visible heights requires updating that function too.
+- Pigeon wing/head/foot pivots and squirrel pose/head/paw/tail pivots are animated in their update functions. Preserve descending-only bird landing and squirrel scoring/timeouts.
+
+### Wet-dog implementation
+
+- `WetDog` owns simulation-time wetness, one pending exit shake, and a fixed 64-print pool. It runs before `player.inPond` is overwritten so the old state detects water exit.
+- After more than 0.3 seconds immersed, exit arms a shake. After a 0.45-second delay, speed below 1.3 triggers a 1.15-second shake. Re-entering water cancels it; wetness refreshes to 22 seconds in water.
+- Call `WetDog.pose(ludoBones)` AFTER the mixer and other overlays. Do not rotate the normalized GLB wrapper or inject camera shake. Comfort mode reduces amplitude and particle count.
+- Pawprints are gravel-only, distance-spaced, fading decals. They use existing ground/path helpers; no separate texture files or unbounded allocations. `SplashFX` supplies droplets.
+- `__westie.wetDog()` returns diagnostic state: wetSeconds, shaking, pending, shakes, stamps, visiblePrints. Other existing debug hooks remain available.
+- Verify pond entry/exit, re-entry cancellation, one shake per exit, footprints on gravel only, print expiration, all cameras, and comfort mode. Use `play()` and deterministic `step()` when a preview tab is hidden, then inspect screenshots.
+
+### Independent character rotation / Free orbit
+
+- Fourth `viewMode` is `orbit`; V cycles `fp → front → chase → orbit → fp`. `setViewMode()` initializes orbit heading from Ludo only when entering this mode.
+- `orbitYaw` and `orbitPitch` belong to the camera; `player.yaw` belongs to Ludo. A/D and the left stick keep steering Ludo. W/S move along his heading (not camera-relative WASD).
+- Route desktop mouse and touch look through `lookInput()`. In orbit it changes only the camera angles; other modes retain their existing behavior. Auto-roam also steers Ludo without recentering the orbit camera.
+- Preserve independent yaw when following player position. No automatic camera alignment while turning.
+- Debug hooks: `setView('orbit')`, `look(deltaYaw, deltaPitch)` in radians, and `cameraMode()` state. Verify turning in place leaves the camera unchanged, orbiting leaves Ludo's heading unchanged, and V exits to first-person correctly.
+
+### Rock collisions
+
+- `rockSurfaces` stores bounds measured from each pond stone's transformed geometry; do not maintain unrelated hand-tuned collider sizes. `ROCK_STEP_HEIGHT` is 0.22 above the stone's local ground.
+- Taller stones join `colliders`; low stones contribute a short approach ramp and top support to `walkSurfaceHeight()`. This is height-based stepping with the existing gait, not paw IK or a new climbing clip.
+- Rock colliders carry `top`, allowing airborne balls to clear them. `__westie.rocks` exposes the bounds for deterministic crossing/blocking checks.
+
+- Pee action: `Pee` owns a three-second pose/particle action and a 15-second cooldown. U and `btn-pee` start it. Movement stops during the action; orbit camera remains usable. The pose overlays `R_backleg`, `R_backleg1`, and `tailstart` after the mixer. Debug hooks: `__westie.pee()` and `peeStatus()`. Browser checks covered movement lock, completion, cooldown rejection, and reuse.

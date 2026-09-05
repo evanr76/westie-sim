@@ -185,7 +185,8 @@
     <span class="key"><kbd>/</kbd> keys</span>
   </div>
   <div id="topright">
-    <button class="iconbtn off" id="btn-view" title="Camera: first-person / chase / face (V)">🎥</button>
+    <button class="iconbtn off" id="btn-view" title="Camera: first-person / face / chase / free orbit (V)">🎥</button>
+    <button class="iconbtn" id="btn-pee" title="Pee / mark a spot (U)">💦</button>
     <button class="iconbtn off" id="btn-auto" title="Auto-roam — AI runs Ludo (G)">🤖</button>
     <button class="iconbtn" id="btn-sound" title="Sound (M)">🔊</button>
     <button class="iconbtn" id="btn-vision" title="Dog vision (C)">👁️</button>
@@ -220,7 +221,7 @@
       <div><kbd>Space</kbd> bark 🐕</div>
       <div><kbd>E</kbd> sniff for treats</div>
       <div><kbd>F</kbd> throw &amp; fetch ball</div>
-      <div><kbd>V</kbd> camera — see Ludo's face 🐶</div>
+      <div><kbd>V</kbd> camera — face / chase / free orbit 🐶</div>
       <div><kbd>G</kbd> auto-roam (AI) 🤖</div>
       <div><kbd>/</kbd> all shortcuts</div>
     </div>
@@ -237,12 +238,13 @@
       <div><kbd>W</kbd><kbd>S</kbd> run forward / back</div>
       <div><kbd>A</kbd><kbd>D</kbd> turn left / right</div>
       <div><kbd>Shift</kbd> sprint (zoomies)</div>
-      <div><kbd>Mouse</kbd> look &amp; steer</div>
+      <div><kbd>Mouse</kbd> look &amp; steer (orbit in Free orbit)</div>
       <div><kbd>Space</kbd> bark</div>
       <div><kbd>E</kbd> sniff — find treats</div>
       <div><kbd>F</kbd> throw / fetch ball</div>
+      <div><kbd>U</kbd> pee / mark a spot 💦</div>
       <div><kbd>G</kbd> auto-roam (AI) 🤖</div>
-      <div><kbd>V</kbd> camera: 1st / face / chase</div>
+      <div><kbd>V</kbd> camera: 1st / face / chase / free orbit</div>
       <div><kbd>C</kbd> dog vision</div>
       <div><kbd>R</kbd> reduce motion</div>
       <div><kbd>M</kbd> mute</div>
@@ -560,7 +562,9 @@ scene.add(grass);
 // =========================================================================
 //  TREES  (instanced branches + layered leaf sprays) + collision list
 // =========================================================================
-const colliders=[]; // {x,z,r} cylinders to push player out of
+const colliders=[]; // {x,z,r,top?} cylinders to push player out of
+const rockSurfaces=[];
+const ROCK_STEP_HEIGHT=0.22; // low stones are walkable; taller ones block Ludo
 const treePositions=[];
 (function buildTrees(){
   const N = IS_MOBILE?14:22;
@@ -721,11 +725,17 @@ let waterMat;
   const dummy=new T.Object3D(),tint=new T.Color();
   const stones=new T.InstancedMesh(new T.IcosahedronGeometry(1,1),new T.MeshStandardMaterial({roughness:1}),76);
   stones.castShadow=true; stones.receiveShadow=true;
+  const rockVertex=new T.Vector3(),rockPositions=stones.geometry.attributes.position;
   for(let i=0;i<76;i++){
     const a=rand(0,TAU),r=POND.r+rand(0.25,1.5),x=POND.x+Math.cos(a)*r,z=POND.z+Math.sin(a)*r;
     const size=rand(0.12,0.4);
     dummy.position.set(x,groundHeight(x,z)+size*0.22,z); dummy.rotation.set(rand(-0.3,0.3),a,0);
     dummy.scale.set(size*1.4,size*0.65,size); dummy.updateMatrix(); stones.setMatrixAt(i,dummy.matrix);
+    // Derive collision bounds from the same transformed vertices that are rendered.
+    let top=-Infinity,radius=0;
+    for(let j=0;j<rockPositions.count;j++){rockVertex.fromBufferAttribute(rockPositions,j).applyMatrix4(dummy.matrix);top=Math.max(top,rockVertex.y);radius=Math.max(radius,Math.hypot(rockVertex.x-x,rockVertex.z-z));}
+    const rock={x,z,r:radius,top,step:top-groundHeight(x,z)<=ROCK_STEP_HEIGHT};rockSurfaces.push(rock);
+    if(!rock.step)colliders.push(rock);
     tint.setHSL(0.11,rand(0.06,0.18),rand(0.28,0.48)); stones.setColorAt(i,tint);
   }
   scene.add(stones);
@@ -771,7 +781,8 @@ const SplashFX=(function(){
   const MAX=160; const geo=new T.BufferGeometry();
   const pos=new Float32Array(MAX*3), parts=[];
   geo.setAttribute('position',new T.BufferAttribute(pos,3));
-  const mat=new T.PointsMaterial({ color:0xcdefff, size:0.16, transparent:true, opacity:0.9, depthWrite:false, fog:true });
+  const dropCanvas=makeCanvas(32),dropCtx=dropCanvas.getContext('2d'),dropGrad=dropCtx.createRadialGradient(16,16,1,16,16,15);dropGrad.addColorStop(0,'rgba(255,255,255,1)');dropGrad.addColorStop(.45,'rgba(255,255,255,.8)');dropGrad.addColorStop(1,'rgba(255,255,255,0)');dropCtx.fillStyle=dropGrad;dropCtx.fillRect(0,0,32,32);
+  const mat=new T.PointsMaterial({ map:new T.CanvasTexture(dropCanvas), color:0xcdefff, size:0.07, transparent:true, opacity:0.9, depthWrite:false, fog:true });
   const pts=new T.Points(geo,mat); pts.frustumCulled=false; scene.add(pts);
   for(let i=0;i<MAX;i++) parts.push({life:0,x:0,y:-999,z:0,vx:0,vy:0,vz:0});
   function burst(x,y,z,n,color,spread,up){
@@ -786,6 +797,82 @@ const SplashFX=(function(){
       if(p.y<0){ p.y=0; p.life=Math.min(p.life,0.1);} pos[i*3]=p.x; pos[i*3+1]=p.y; pos[i*3+2]=p.z; }
     geo.attributes.position.needsUpdate=true; }
   return { burst, update };
+})();
+
+// Wet-dog state uses simulation time and bounded pools, with no camera shake.
+const WetDog=(function(){
+  const c=makeCanvas(128),ctx=c.getContext('2d');ctx.fillStyle='#302e26';
+  ctx.beginPath();ctx.ellipse(64,80,26,22,0,0,TAU);ctx.fill();
+  for(const toe of [[25,48,11,15],[48,31,12,16],[77,31,12,16],[101,48,11,15]]){ctx.beginPath();ctx.ellipse(toe[0],toe[1],toe[2],toe[3],0,0,TAU);ctx.fill();}
+  const tex=new T.CanvasTexture(c);tex.encoding=T.sRGBEncoding;
+  const geo=new T.PlaneGeometry(.14,.17).rotateX(-Math.PI/2),prints=[];
+  for(let i=0;i<64;i++){const m=new T.Mesh(geo,new T.MeshBasicMaterial({map:tex,transparent:true,opacity:0,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-2}));m.visible=false;scene.add(m);prints.push({mesh:m,life:0,strength:1});}
+  let wet=0,soak=0,exitDelay=0,shake=0,pending=false,travel=0,next=0,side=1,droplet=0,shakes=0,stamps=0;
+  function stamp(x,z,yaw){if(!onGravel(x,z))return;const p=prints[next];next=(next+1)%prints.length;p.life=12;p.strength=Math.min(1,wet/5);p.mesh.position.set(x,groundHeight(x,z)+.035,z);p.mesh.rotation.y=yaw;p.mesh.visible=true;p.mesh.material.opacity=.36*Math.min(1,wet/5);stamps++;}
+  return {
+    update(dt,inWater,wasInWater,speed,x,z,yaw){
+      for(const p of prints){if(p.life<=0)continue;p.life=Math.max(0,p.life-dt);p.mesh.material.opacity=.36*p.strength*Math.min(1,p.life/8);p.mesh.visible=p.life>0;}
+      if(inWater){wet=22;soak+=dt;pending=false;shake=0;travel=0;}
+      else {
+        wet=Math.max(0,wet-dt);if(wet===0)pending=false;
+        if(wasInWater){pending=soak>.3;soak=0;exitDelay=.45;}
+        exitDelay=Math.max(0,exitDelay-dt);
+        if(pending&&exitDelay===0&&speed<1.3&&wet>0){shake=1.15;pending=false;droplet=0;shakes++;Audio.splash();toast('Shake it off! 💦');}
+        if(shake>0){shake=Math.max(0,shake-dt);droplet-=dt;if(droplet<=0){SplashFX.burst(x,walkSurfaceHeight(x,z)+.38,z,reduceMotion?3:8,0xbcd8de,3.3,1.8);droplet=.09;}}
+        if(wet>0&&speed>.15){travel+=speed*dt;if(travel>=.28){travel%=.28;side=-side;const rx=Math.cos(yaw)*side*.09,rz=-Math.sin(yaw)*side*.09;stamp(x+rx,z+rz,yaw);stamp(x+rx+Math.sin(yaw)*.25,z+rz+Math.cos(yaw)*.25,yaw);}}
+        else travel=0;
+      }
+    },
+    pose(bones){if(shake<=0)return;const t=1.15-shake,envelope=Math.sin(Math.PI*t/1.15),roll=Math.sin(t*39)*envelope*(reduceMotion?.10:.34);
+      if(bones.chest)bones.chest.rotation.z+=roll;
+      if(bones.head)bones.head.rotation.z-=roll*1.4;
+      if(bones.earend)bones.earend.rotation.x+=roll*1.7;
+      if(bones.R_earend)bones.R_earend.rotation.x-=roll*1.7;
+      if(bones.tailstart)bones.tailstart.rotation.x+=roll*.6;
+    },
+    status(){return {wetSeconds:wet,shaking:shake>0,pending,shakes,stamps,visiblePrints:prints.filter(p=>p.life>0).length};}
+  };
+})();
+
+// A bounded, procedural marking action. No extra model or animation asset.
+const Pee=(function(){
+  const count=28,positions=new Float32Array(count*3);
+  const geometry=new T.BufferGeometry();geometry.setAttribute('position',new T.BufferAttribute(positions,3));
+  const dot=makeCanvas(32),ctx=dot.getContext('2d');ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(16,16,12,0,TAU);ctx.fill();
+  const stream=new T.Points(geometry,new T.PointsMaterial({map:new T.CanvasTexture(dot),color:0xd8cf83,size:.018,transparent:true,opacity:.6,depthWrite:false}));
+  stream.frustumCulled=false;stream.visible=false;scene.add(stream);
+  let remaining=0,cooldown=0,heading=0,uses=0;
+  function start(){
+    if(paused||remaining>0)return false;
+    if(cooldown>0){toast('Nothing left just yet 🐾');return false;}
+    if(player.inPond||WetDog.status().shaking){toast('Find a dry spot first 🐾');return false;}
+    setAuto(false);player.vel.set(0,0,0);heading=player.yaw;remaining=3;cooldown=15;uses++;
+    toast('Ludo is leaving his calling card 🐾');return true;
+  }
+  return {start,
+    active(){return remaining>0;},
+    update(dt){
+      cooldown=Math.max(0,cooldown-dt);remaining=Math.max(0,remaining-dt);
+      if(remaining>0)player.yaw=heading;
+      const t=3-remaining;stream.visible=remaining>0&&t>.55&&t<2.5;
+      if(!stream.visible)return;
+      const cs=Math.cos(heading),sn=Math.sin(heading);
+      for(let i=0;i<count;i++){
+        const u=((i/count+t*1.7)%1),side=.08+u*.48,back=.19;
+        const x=player.pos.x+cs*side+sn*back,z=player.pos.z-sn*side+cs*back;
+        positions[i*3]=x;positions[i*3+1]=Math.max(walkSurfaceHeight(x,z)+.02,player.pos.y+.29+.08*u-.37*u*u);positions[i*3+2]=z;
+      }
+      geometry.attributes.position.needsUpdate=true;
+    },
+    pose(bones){
+      if(remaining<=0)return;
+      const amount=Math.min(1,(3-remaining)/.5,remaining/.5);
+      if(bones.R_backleg)bones.R_backleg.rotation.z+=amount*.85;
+      if(bones.R_backleg1)bones.R_backleg1.rotation.x-=amount*.5;
+      if(bones.tailstart)bones.tailstart.rotation.x+=amount*.3;
+    },
+    status(){return {active:remaining>0,remaining,cooldown,uses,streamVisible:stream.visible};}
+  };
 })();
 
 // =========================================================================
@@ -885,7 +972,16 @@ function walkSurfaceHeight(x,z){
   const dx=x,dz=z+44,ax=Math.abs(dx),az=Math.abs(dz);
   if(ax<3.695&&az<3.695&&ax+az<5.226)return gazeboBase+.3225;
   if(ax<1.3&&dz>=3.695&&dz<4.9)return Math.max(groundHeight(x,z),gazeboBase+(dz<4.1?.2625:dz<4.5?.1875:.1125));
-  return groundHeight(x,z);
+  let floor=groundHeight(x,z);
+  for(const rock of rockSurfaces){
+    if(!rock.step)continue;
+    const distance=Math.hypot(x-rock.x,z-rock.z),edge=rock.r+.42;
+    if(distance>=edge)continue;
+    // A short approach ramp lets the front paws step up before the body reaches the rock.
+    const t=clamp((edge-distance)/.30,0,1),blend=t*t*(3-2*t);
+    floor=Math.max(floor,lerp(groundHeight(x,z),rock.top+.008,blend));
+  }
+  return floor;
 }
 (function gazebo(){
   const g=new T.Group(),paint=new T.MeshStandardMaterial({color:0xe3dfcd,roughness:.83});
@@ -992,12 +1088,13 @@ for(let i=0;i<(IS_MOBILE?7:12);i++){ const b=makeBird();let x,z;do{const a=rand(
 // =========================================================================
 //  BALL (fetch)
 // =========================================================================
+const BALL_RADIUS=.04;
 const ball=new T.Group();
 (function(){
   const felt=furTexture('#b3bb3d','#dbe395');
-  const b=new T.Mesh(new T.SphereGeometry(.18,24,16),new T.MeshStandardMaterial({map:felt,roughness:1,color:0xd6dd79}));b.castShadow=true;ball.add(b);
-  const points=[];for(let i=0;i<=128;i++){const a=i/128*TAU,lat=.55*Math.sin(a*2);points.push(new T.Vector3(Math.cos(lat)*Math.cos(a)*.1805,Math.sin(lat)*.1805,Math.cos(lat)*Math.sin(a)*.1805));}
-  const seam=new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(points.slice(0,-1),true),128,.0035,5,true),new T.MeshStandardMaterial({color:0xe9e4ca,roughness:1}));ball.add(seam);ball.name='tennis ball';ball.position.set(3,.18,-3);scene.add(ball);
+  const b=new T.Mesh(new T.SphereGeometry(BALL_RADIUS,24,16),new T.MeshStandardMaterial({map:felt,roughness:1,color:0xd6dd79}));b.castShadow=true;ball.add(b);
+  const points=[];for(let i=0;i<=128;i++){const a=i/128*TAU,lat=.55*Math.sin(a*2);points.push(new T.Vector3(Math.cos(lat)*Math.cos(a)*(BALL_RADIUS+.0005),Math.sin(lat)*(BALL_RADIUS+.0005),Math.cos(lat)*Math.sin(a)*(BALL_RADIUS+.0005)));}
+  const seam=new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3(points.slice(0,-1),true),128,.0012,5,true),new T.MeshStandardMaterial({color:0xe9e4ca,roughness:1}));ball.add(seam);ball.name='tennis ball';ball.position.set(3,walkSurfaceHeight(3,-3)+BALL_RADIUS,-3);scene.add(ball);
 })();
 const ballState={vx:0,vy:0,vz:0,rest:true, held:false, noGrab:0};
 
@@ -1291,6 +1388,7 @@ function setObjective(s){ $('objective').textContent=s; }
 // =========================================================================
 const keys={};
 let pointerLocked=false, paused=true, scentMode=false, dogVision=false, reduceMotion=false, viewMode='fp';
+let orbitYaw=0,orbitPitch=0;
 addEventListener('keydown',e=>{
   if(e.key==='/'){ e.preventDefault(); toggleHelp(); return; }            // shortcuts modal (works anytime)
   if(e.key==='Escape' && helpOpen){ toggleHelp(); return; }
@@ -1302,6 +1400,7 @@ addEventListener('keydown',e=>{
   if(k===' '){ e.preventDefault(); doBark(); }
   if(k==='e'){ toggleScent(); }
   if(k==='f'){ throwOrFetch(); }
+  if(k==='u'&&!e.repeat){ Pee.start(); }
   if(k==='c'){ toggleVision(); }
   if(k==='r'){ toggleMotion(); }
   if(k==='v'){ toggleView(); }
@@ -1321,8 +1420,11 @@ document.addEventListener('pointerlockchange',()=>{
   // so the on-screen HUD buttons become clickable; click the park to re-capture the mouse for looking.
   if(!IS_TOUCH) $('cursorhint').classList.toggle('show', !pointerLocked && !paused);
 });
-document.addEventListener('mousemove',e=>{ if(!pointerLocked||paused) return;
-  player.yaw -= e.movementX*0.0024; player.pitch=clamp(player.pitch - e.movementY*0.0024, -0.9, 0.55); });
+function lookInput(dx,dy){
+  if(viewMode==='orbit'){orbitYaw-=dx;orbitPitch=clamp(orbitPitch-dy,-.65,.45);}
+  else {if(!Pee.active())player.yaw-=dx;player.pitch=clamp(player.pitch-dy,-.9,.55);}
+}
+document.addEventListener('mousemove',e=>{if(!pointerLocked||paused)return;lookInput(e.movementX*.0024,e.movementY*.0024);});
 
 // touch look (right half drag) + joystick
 let moveVec={x:0,y:0};
@@ -1336,7 +1438,7 @@ let moveVec={x:0,y:0};
   // look: any touch on right side not on stick/buttons
   let lid=null,lx=0,ly=0;
   addEventListener('touchstart',e=>{ if(paused)return; for(const t of e.changedTouches){ if(t.clientX>window.innerWidth*0.45 && lid===null && t.target.tagName!=='BUTTON'){ lid=t.identifier; lx=t.clientX; ly=t.clientY; } } });
-  addEventListener('touchmove',e=>{ for(const t of e.changedTouches){ if(t.identifier===lid){ player.yaw-=(t.clientX-lx)*0.005; player.pitch=clamp(player.pitch-(t.clientY-ly)*0.005,-0.9,0.55); lx=t.clientX; ly=t.clientY; } } },{passive:false});
+  addEventListener('touchmove',e=>{ for(const t of e.changedTouches){ if(t.identifier===lid){ if(!paused)lookInput((t.clientX-lx)*.005,(t.clientY-ly)*.005); lx=t.clientX; ly=t.clientY; } } },{passive:false});
   addEventListener('touchend',e=>{ for(const t of e.changedTouches){ if(t.identifier===lid) lid=null; } });
   // buttons
   const press=(id,fn)=>{ const el=$(id); el.addEventListener('touchstart',e=>{e.preventDefault();fn();},{passive:false}); };
@@ -1361,7 +1463,7 @@ function throwOrFetch(){
     // throw it forward (-z rotated by yaw); brief no-grab so it isn't re-fetched instantly
     ballState.held=false; ballState.rest=false; ballState.noGrab=0.4;
     const fx=-Math.sin(player.yaw), fz=-Math.cos(player.yaw);
-    ball.position.set(player.pos.x+fx*0.8, 0.5, player.pos.z+fz*0.8);
+    ball.position.set(player.pos.x+fx*0.8, player.pos.y+0.35, player.pos.z+fz*0.8);
     ballState.vx=fx*12; ballState.vz=fz*12; ballState.vy=6.5;
     toast('Fetch! 🎾'); Audio.chime(true);
   }
@@ -1414,14 +1516,17 @@ let helpOpen=false;
 function toggleHelp(){ helpOpen=!helpOpen; $('helpmodal').classList.toggle('hide',!helpOpen); }
 function applyView(){ const fp=(viewMode==='fp'); head.visible=fp; if(ludoDog) ludoDog.visible=!fp;
   $('btn-view').classList.toggle('off',fp);
-  const lbl = viewMode==='front'?'Face cam':viewMode==='chase'?'Chase cam':'First-person';
+  const lbl = viewMode==='front'?'Face cam':viewMode==='chase'?'Chase cam':viewMode==='orbit'?'Free orbit · A/D turn Ludo':'First-person';
   const vl=$('viewlabel'); if(vl) vl.textContent='📷 '+lbl;
 }
+function setViewMode(mode){
+  const next=['fp','front','chase','orbit'].includes(mode)?mode:'fp';
+  if(next==='orbit'&&viewMode!=='orbit'){orbitYaw=player.yaw;orbitPitch=0;}
+  viewMode=next;applyView();_chaseInit=false;
+}
 function toggleView(){
-  // cycle so the FIRST press from first-person shows Ludo's face
-  viewMode = viewMode==='fp' ? 'front' : viewMode==='front' ? 'chase' : 'fp';
-  applyView(); _chaseInit=false;  // snap the orbit cam to its new spot (don't sweep through the dog)
-  toast(viewMode==='front'?"📷 Face cam — there's Ludo! 🐶":viewMode==='chase'?'📷 Chase cam 🎥':'📷 First-person 🐽');
+  setViewMode(viewMode==='fp'?'front':viewMode==='front'?'chase':viewMode==='chase'?'orbit':'fp');
+  toast(viewMode==='front'?"📷 Face cam — there's Ludo! 🐶":viewMode==='chase'?'📷 Chase cam 🎥':viewMode==='orbit'?'Free orbit: A/D turn Ludo · mouse or touch orbits camera':'📷 First-person 🐽');
 }
 applyView(); // set initial FP visibility
 
@@ -1452,6 +1557,7 @@ $('btn-sound').addEventListener('click',e=>{ e.stopPropagation(); Audio.init(); 
 $('btn-vision').addEventListener('click',e=>{ e.stopPropagation(); toggleVision(); });
 $('btn-motion').addEventListener('click',e=>{ e.stopPropagation(); toggleMotion(); });
 $('btn-view').addEventListener('click',e=>{ e.stopPropagation(); toggleView(); });
+$('btn-pee').addEventListener('click',e=>{e.stopPropagation();Pee.start();});
 $('btn-auto').addEventListener('click',e=>{ e.stopPropagation(); setAuto(!autoMode); });
 // ---- runtime .glb model picker (all local — FileReader, no network) ----
 function loadLudoFile(f){
@@ -1471,7 +1577,7 @@ let hintTimer=0, introShown=false;
 // =========================================================================
 function resolveCollisions(p){
   for(const c of colliders){ const dx=p.x-c.x, dz=p.z-c.z, d=Math.hypot(dx,dz), min=c.r+0.35;
-    if(d<min && d>1e-4){ const push=(min-d)/d; p.x+=dx*push; p.z+=dz*push; } }
+    if(d<min){const nx=d>1e-4?dx/d:1,nz=d>1e-4?dz/d:0;p.x=c.x+nx*min;p.z=c.z+nz*min;} }
   // fence boundary
   const r=Math.hypot(p.x,p.z); if(r>FENCE_R-0.6){ const k=(FENCE_R-0.6)/r; p.x*=k; p.z*=k; }
 }
@@ -1497,6 +1603,7 @@ function update(dt, time){
   if(mvD) turnInput+=1;
   if(IS_TOUCH){ turnInput+=moveVec.x; fwdInput+=-moveVec.y; }
   if(autoMode){ const a=autoSteer(dt); fwdInput=a.fwd; turnInput=a.turn; autoSprint=a.sprint; }
+  if(Pee.active()){fwdInput=0;turnInput=0;player.vel.set(0,0,0);}
   fwdInput=clamp(fwdInput,-1,1); turnInput=clamp(turnInput,-1,1);
 
   // turn the dog (mouse-look also steers by changing yaw)
@@ -1518,11 +1625,13 @@ function update(dt, time){
   resolveCollisions(player.pos);
   const gh=walkSurfaceHeight(player.pos.x,player.pos.z);
   player.pos.y=gh;
+  Pee.update(dt);
 
   // pond check
   const inPond=Math.hypot(player.pos.x-POND.x,player.pos.z-POND.z)<POND.r;
   if(inPond && !player.inPond){ Audio.splash(); }
   if(inPond && sp>0.5 && Math.random()<dt*14){ SplashFX.burst(player.pos.x,Math.max(gh+0.1,POND.y+0.03),player.pos.z,5,0xcdefff,3,2.4); Audio.splash(); }
+  WetDog.update(dt,inPond,player.inPond,sp,player.pos.x,player.pos.z,player.yaw);
   player.inPond=inPond;
   PondRipples.update(dt,player.pos.x,player.pos.z,inPond,sp);
 
@@ -1564,7 +1673,7 @@ function update(dt, time){
     pitchObj.getWorldQuaternion(camera.quaternion);
     _chaseInit=false;
   } else {
-    const cp=clamp(player.pitch,-0.5,0.4);
+    const cp=viewMode==='orbit'?orbitPitch:clamp(player.pitch,-0.5,0.4);
     if(viewMode==='front'){          // face cam: a flattering 3/4 from in front (shows face, harness, tail)
       _camTarget.set(0.85, 0.5 - cp*0.6, -1.65);
       _camFocus.set(0, 0.33, -0.1);
@@ -1572,7 +1681,7 @@ function update(dt, time){
       _camTarget.set(0, 1.15 - cp*1.4, 2.7);
       _camFocus.set(0, 0.36, 0.12);
     }
-    _camTarget.applyAxisAngle(_UP, player.yaw).add(player.pos);
+    _camTarget.applyAxisAngle(_UP, viewMode==='orbit'?orbitYaw:player.yaw).add(player.pos);
     const camFloor=groundHeight(_camTarget.x,_camTarget.z)+0.3;
     if(_camTarget.y<camFloor) _camTarget.y=camFloor;
     if(!_chaseInit){ _chasePos.copy(_camTarget); _chaseInit=true; }
@@ -1580,7 +1689,7 @@ function update(dt, time){
     _chasePos.y=damp(_chasePos.y,_camTarget.y,9,dt);
     _chasePos.z=damp(_chasePos.z,_camTarget.z,9,dt);
     camera.position.copy(_chasePos);
-    _camFocus.applyAxisAngle(_UP, player.yaw).add(player.pos);
+    _camFocus.applyAxisAngle(_UP, viewMode==='orbit'?orbitYaw:player.yaw).add(player.pos);
     camera.up.set(0,1,0); camera.lookAt(_camFocus);
   }
 
@@ -1616,6 +1725,8 @@ function update(dt, time){
     if(ludoBones.head) ludoBones.head.rotation.x += (scentMode?-0.35:0) - bp*0.3;
     if(ludoBones.earend)   ludoBones.earend.rotation.x   += -bp*0.5 - earFlop*0.5;
     if(ludoBones.R_earend) ludoBones.R_earend.rotation.x += -bp*0.5 + earFlop*0.5;
+    WetDog.pose(ludoBones);
+    Pee.pose(ludoBones);
   }
   // front paws (camera-attached) reach up into the bottom of the frame when galloping
   const reach=clamp((sp-2.5)/5.5,0,1);
@@ -1665,10 +1776,10 @@ function update(dt, time){
 function updateBall(dt,playerGh){
   if(ballState.noGrab>0) ballState.noGrab-=dt;
   if(ballState.held){ // carried low in the mouth/jaw, ahead of the dog (scalar — no per-frame alloc); kept low so it doesn't block the FP view
-    ball.position.set(player.pos.x - Math.sin(player.yaw)*0.5, playerGh+0.12, player.pos.z - Math.cos(player.yaw)*0.5); return; }
+    ball.position.set(player.pos.x - Math.sin(player.yaw)*0.26, playerGh+0.37, player.pos.z - Math.cos(player.yaw)*0.26); return; }
   if(!ballState.rest){
     ballState.vy-=14*dt; ball.position.x+=ballState.vx*dt; ball.position.y+=ballState.vy*dt; ball.position.z+=ballState.vz*dt;
-    const g=walkSurfaceHeight(ball.position.x,ball.position.z)+0.18;
+    const g=walkSurfaceHeight(ball.position.x,ball.position.z)+BALL_RADIUS;
     if(ball.position.y<=g){ ball.position.y=g; if(ballState.vy<-0.5){ ballState.vy*=-0.5; SplashFX.burst(ball.position.x,g,ball.position.z,3,0xddffdd,1.5,1.2);} else ballState.vy=0;
       ballState.vx*=0.7; ballState.vz*=0.7; if(Math.hypot(ballState.vx,ballState.vz)<0.4 && Math.abs(ballState.vy)<0.5){ ballState.rest=true; ballState.vx=ballState.vz=ballState.vy=0; } }
     ball.rotation.x+=ballState.vz*dt*2; ball.rotation.z-=ballState.vx*dt*2;
@@ -1676,11 +1787,11 @@ function updateBall(dt,playerGh){
     const r=Math.hypot(ball.position.x,ball.position.z);
     if(r>FENCE_R-1){ const k=(FENCE_R-1)/r; ball.position.x*=k; ball.position.z*=k; ballState.vx*=-0.5; ballState.vz*=-0.5; }
     // bounce off solid props instead of tunnelling through them
-    for(const c of colliders){ const dx=ball.position.x-c.x, dz=ball.position.z-c.z, d=Math.hypot(dx,dz), min=c.r+0.2;
+    for(const c of colliders){ if(c.top!==undefined&&ball.position.y-BALL_RADIUS>c.top)continue; const dx=ball.position.x-c.x, dz=ball.position.z-c.z, d=Math.hypot(dx,dz), min=c.r+BALL_RADIUS;
       if(d<min && d>1e-4){ const nx=dx/d, nz=dz/d; ball.position.x=c.x+nx*min; ball.position.z=c.z+nz*min;
         const vn=ballState.vx*nx+ballState.vz*nz; if(vn<0){ ballState.vx-=1.5*vn*nx; ballState.vz-=1.5*vn*nz; } } }
   } else {
-    ball.position.y=walkSurfaceHeight(ball.position.x,ball.position.z)+0.18;
+    ball.position.y=walkSurfaceHeight(ball.position.x,ball.position.z)+BALL_RADIUS;
   }
   // pick up if close (but not right after a throw)
   if(!ballState.held && ballState.noGrab<=0 && ball.position.distanceTo(player.pos)<0.9){
@@ -1826,14 +1937,14 @@ let devForce=false; let devTime=0;
 document.addEventListener('visibilitychange',()=>{ if(document.hidden){ if(!paused && !devForce) pauseGame(); } else { Audio.resume(); } });
 
 // expose handles for debugging / automated verification
-window.__westie={ player,scene,renderer,camera,playerRig,pitchObj,HUD,
+window.__westie={ player,scene,renderer,camera,playerRig,pitchObj,HUD,pee:()=>Pee.start(),peeStatus:()=>Pee.status(),wetDog:()=>WetDog.status(),rocks:rockSurfaces,
   play(){ paused=false; devForce=true; const o=$('overlay'); o.classList.add('hide'); o.style.opacity='0'; o.style.pointerEvents='none'; Audio.init(); },
   pause(){ paused=true; },
   isPaused(){ return paused; },
   setKey(k,v){ keys[k.toLowerCase()]=v; },
   setYaw(y){ player.yaw=y; }, setPitch(p){ player.pitch=p; },
   step(n){ n=n||1; for(let i=0;i<n;i++){ devTime+=1/60; update(1/60, devTime); } renderer.render(scene,camera); return {pos:[+player.pos.x.toFixed(2),+player.pos.z.toFixed(2)], spd:+player.speed.toFixed(2)}; },
-  setView(v){ viewMode=(v==='chase'||v==='front')?v:'fp'; applyView(); _chaseInit=false; },
+  setView:setViewMode, look:lookInput, cameraMode:()=>({mode:viewMode,orbitYaw,orbitPitch}),
   teleport(x,z){ player.pos.set(x,0,z); player.vel.set(0,0,0); },
   birds, squirrels, treats, ball, ballState, ludoBones, ludoDog:()=>ludoDog, ludoMixer:()=>ludoMixer,
   loadLudoBuffer:(b)=>{ buildLudoFromBuffer(b); applyView(); },
